@@ -46,7 +46,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::convert::{TryFrom, TryInto};
 
-pub use geo::{Coordinate, CoordinateType, Line, LineString, Point};
+pub use geo::{Coord as Coordinate, CoordNum as CoordinateType, Line, LineString, Point};
 use num_traits::Signed;
 
 /// A continuous piecewise linear function.
@@ -74,7 +74,7 @@ use num_traits::Signed;
 /// use piecewise_linear::PiecewiseLinearFunction;
 /// use std::convert::TryFrom;
 /// let f = PiecewiseLinearFunction::try_from(vec![(0., 0.), (1., 1.), (2., 1.5)]).unwrap();
-/// assert_eq!(f.y_at_x(1.25), Some(1.125));
+/// assert_eq!(f.y_at_x(1.25).unwrap(), 1.125);
 /// ```
 #[derive(PartialEq, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -87,23 +87,23 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
     /// Creates a new `PiecewiseLinearFunction` from a vector of `Coordinates`.
     ///
     /// Returns a new PicewiseLinearFunction, or `None` if the invariants were not respected.
-    pub fn new(coordinates: Vec<Coordinate<T>>) -> Option<Self> {
+    pub fn new(coordinates: Vec<Coordinate<T>>) -> Result<Self, Error> {
         if coordinates.len() >= 2 && coordinates.windows(2).all(|w| w[0].x < w[1].x) {
-            Some(PiecewiseLinearFunction { coordinates })
+            Ok(PiecewiseLinearFunction { coordinates })
         } else {
-            None
+            Err(Error::InvariantsNotRespected)
         }
     }
 
     /// Returns a new constant `PiecewiseLinearFunction` with the specified domain and value.
     ///
     /// Returns `None` if the domain is not valid (i.e. `domain.1 <= domain.0`).
-    pub fn constant(domain: (T, T), value: T) -> Option<Self> {
+    pub fn constant(domain: (T, T), value: T) -> Result<Self, Error> {
         if domain.0 < domain.1 {
             let coordinates = vec![(domain.0, value).into(), (domain.1, value).into()];
-            Some(PiecewiseLinearFunction { coordinates })
+            Ok(PiecewiseLinearFunction { coordinates })
         } else {
-            None
+            Err(Error::DomainInvalid)
         }
     }
 
@@ -148,7 +148,7 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
     /// Returns a segment `((x1, y1), (x2, y2))` of this function such that `x1 <= x <= x2`.
     ///
     /// Returns `None` if `x` is outside the domain of f.
-    pub fn segment_at_x(&self, x: T) -> Option<Line<T>> {
+    pub fn segment_at_x(&self, x: T) -> Result<Line<T>, Error> {
         let idx = match self
             .coordinates
             .binary_search_by(|val| bogus_compare(&val.x, &x))
@@ -157,7 +157,7 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
             Err(idx) => {
                 if idx == 0 || idx == self.coordinates.len() {
                     // Outside the function's domain
-                    return None;
+                    return Err(Error::OutsideDomain);
                 } else {
                     idx
                 }
@@ -165,16 +165,16 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
         };
 
         if idx == 0 {
-            Some(Line::new(self.coordinates[idx], self.coordinates[idx + 1]))
+            Ok(Line::new(self.coordinates[idx], self.coordinates[idx + 1]))
         } else {
-            Some(Line::new(self.coordinates[idx - 1], self.coordinates[idx]))
+            Ok(Line::new(self.coordinates[idx - 1], self.coordinates[idx]))
         }
     }
 
     /// Computes the value f(x) for this piecewise linear function.
     ///
     /// Returns `None` if `x` is outside the domain of f.
-    pub fn y_at_x(&self, x: T) -> Option<T> {
+    pub fn y_at_x(&self, x: T) -> Result<T, Error> {
         self.segment_at_x(x).map(|line| y_at_x(&line, x))
     }
 
@@ -182,10 +182,10 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
     /// specified domain.
     ///
     /// Returns `None` if `to_domain` is not a subset of the domain of `self`.
-    pub fn shrink_domain(&self, to_domain: (T, T)) -> Option<PiecewiseLinearFunction<T>> {
+    pub fn shrink_domain(&self, to_domain: (T, T)) -> Result<PiecewiseLinearFunction<T>, Error> {
         let order = compare_domains(self.domain(), to_domain);
         match order {
-            Some(Ordering::Equal) => Some(self.clone()),
+            Some(Ordering::Equal) => Ok(self.clone()),
             Some(Ordering::Greater) => {
                 let mut new_points = Vec::new();
                 for segment in self.segments_iter() {
@@ -199,9 +199,9 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
                         new_points.push(restricted.end);
                     }
                 }
-                Some(new_points.try_into().unwrap())
+                new_points.try_into()
             }
-            _ => None,
+            _ => Err(Error::OutsideDomain),
         }
     }
 
@@ -214,9 +214,9 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
         &self,
         to_domain: (T, T),
         strategy: ExpandDomainStrategy,
-    ) -> PiecewiseLinearFunction<T> {
+    ) -> Result<PiecewiseLinearFunction<T>, Error> {
         if compare_domains(self.domain(), to_domain) == Some(Ordering::Equal) {
-            return self.clone();
+            return Ok(self.clone());
         }
         let mut new_points = Vec::new();
         if self.coordinates[0].x > to_domain.0 {
@@ -261,7 +261,7 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
             new_points.push(self.coordinates[last_index])
         }
 
-        new_points.try_into().unwrap()
+        new_points.try_into()
     }
 
     /// Sums this method with another piecewise linear function.
@@ -400,37 +400,47 @@ impl<T: CoordinateType + ::std::iter::Sum> PiecewiseLinearFunction<T> {
     }
 }
 
+#[derive(Debug)]
+pub enum Error {
+    /// Invariants were not respected
+    InvariantsNotRespected,
+    /// Domain not valid
+    DomainInvalid,
+    /// Result would be outside domain
+    OutsideDomain,
+}
+
 /**** Conversions ****/
 
 impl<T: CoordinateType> TryFrom<LineString<T>> for PiecewiseLinearFunction<T> {
-    type Error = ();
+    type Error = Error;
 
     fn try_from(value: LineString<T>) -> Result<Self, Self::Error> {
-        PiecewiseLinearFunction::new(value.0).ok_or(())
+        PiecewiseLinearFunction::new(value.0)
     }
 }
 
 impl<T: CoordinateType> TryFrom<Vec<Coordinate<T>>> for PiecewiseLinearFunction<T> {
-    type Error = ();
+    type Error = Error;
 
     fn try_from(value: Vec<Coordinate<T>>) -> Result<Self, Self::Error> {
-        PiecewiseLinearFunction::new(value).ok_or(())
+        PiecewiseLinearFunction::new(value)
     }
 }
 
 impl<T: CoordinateType> TryFrom<Vec<Point<T>>> for PiecewiseLinearFunction<T> {
-    type Error = ();
+    type Error = Error;
 
     fn try_from(value: Vec<Point<T>>) -> Result<Self, Self::Error> {
-        PiecewiseLinearFunction::new(value.into_iter().map(|p| p.0).collect()).ok_or(())
+        PiecewiseLinearFunction::new(value.into_iter().map(|p| p.0).collect())
     }
 }
 
 impl<T: CoordinateType> TryFrom<Vec<(T, T)>> for PiecewiseLinearFunction<T> {
-    type Error = ();
+    type Error = Error;
 
     fn try_from(value: Vec<(T, T)>) -> Result<Self, Self::Error> {
-        PiecewiseLinearFunction::new(value.into_iter().map(Coordinate::from).collect()).ok_or(())
+        PiecewiseLinearFunction::new(value.into_iter().map(Coordinate::from).collect())
     }
 }
 
@@ -693,8 +703,8 @@ mod tests {
 
     #[test]
     fn test_constant() {
-        assert_eq!(PiecewiseLinearFunction::constant((0.5, 0.5), 1.), None);
-        assert_eq!(PiecewiseLinearFunction::constant((0.5, -0.5), 1.), None);
+        assert!(PiecewiseLinearFunction::constant((0.5, 0.5), 1.).is_err());
+        assert!(PiecewiseLinearFunction::constant((0.5, -0.5), 1.).is_err());
         assert_eq!(
             PiecewiseLinearFunction::constant((-25., -13.), 1.).unwrap(),
             vec![(-25., 1.), (-13., 1.)].try_into().unwrap()
@@ -832,17 +842,20 @@ mod tests {
 
         // Case 1: no expansion
         assert_eq!(
-            f.expand_domain((0., 2.), ExpandDomainStrategy::ExtendSegment),
+            f.expand_domain((0., 2.), ExpandDomainStrategy::ExtendSegment)
+                .unwrap(),
             f
         );
 
         // Case 2: left expansion
         assert_eq!(
-            f.expand_domain((-1., 2.), ExpandDomainStrategy::ExtendSegment),
+            f.expand_domain((-1., 2.), ExpandDomainStrategy::ExtendSegment)
+                .unwrap(),
             vec![(-1., -1.), (1., 1.), (2., 1.5)].try_into().unwrap()
         );
         assert_eq!(
-            f.expand_domain((-1., 2.), ExpandDomainStrategy::ExtendValue),
+            f.expand_domain((-1., 2.), ExpandDomainStrategy::ExtendValue)
+                .unwrap(),
             vec![(-1., 0.), (0., 0.), (1., 1.), (2., 1.5)]
                 .try_into()
                 .unwrap()
@@ -850,11 +863,13 @@ mod tests {
 
         // Case 3: right expansion
         assert_eq!(
-            f.expand_domain((0., 4.), ExpandDomainStrategy::ExtendSegment),
+            f.expand_domain((0., 4.), ExpandDomainStrategy::ExtendSegment)
+                .unwrap(),
             vec![(0., 0.), (1., 1.), (4., 2.5)].try_into().unwrap()
         );
         assert_eq!(
-            f.expand_domain((0., 4.), ExpandDomainStrategy::ExtendValue),
+            f.expand_domain((0., 4.), ExpandDomainStrategy::ExtendValue)
+                .unwrap(),
             vec![(0., 0.), (1., 1.), (2., 1.5), (4., 1.5)]
                 .try_into()
                 .unwrap()
