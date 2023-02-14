@@ -86,7 +86,7 @@ pub struct PiecewiseLinearFunction<T: CoordinateType> {
 impl<T: CoordinateType> PiecewiseLinearFunction<T> {
     /// Creates a new `PiecewiseLinearFunction` from a vector of `Coordinates`.
     ///
-    /// Returns a new PicewiseLinearFunction, or `None` if the invariants were not respected.
+    /// Returns a new PicewiseLinearFunction, or `Err(Error::InvariantsNotRespected)` if the invariants were not respected.
     pub fn new(coordinates: Vec<Coordinate<T>>) -> Result<Self, Error> {
         if coordinates.len() >= 2 && coordinates.windows(2).all(|w| w[0].x < w[1].x) {
             Ok(PiecewiseLinearFunction { coordinates })
@@ -97,7 +97,7 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
 
     /// Returns a new constant `PiecewiseLinearFunction` with the specified domain and value.
     ///
-    /// Returns `None` if the domain is not valid (i.e. `domain.1 <= domain.0`).
+    /// Returns `Err(Error::DomainInvalid)` if the domain is not valid (i.e. `domain.1 <= domain.0`).
     pub fn constant(domain: (T, T), value: T) -> Result<Self, Error> {
         if domain.0 < domain.1 {
             let coordinates = vec![(domain.0, value).into(), (domain.1, value).into()];
@@ -147,7 +147,7 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
 
     /// Returns a segment `((x1, y1), (x2, y2))` of this function such that `x1 <= x <= x2`.
     ///
-    /// Returns `None` if `x` is outside the domain of f.
+    /// Returns `Err(Error::OutsideDomain)` if `x` is outside the domain of f.
     pub fn segment_at_x(&self, x: T) -> Result<Line<T>, Error> {
         let idx = match self
             .coordinates
@@ -173,7 +173,7 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
 
     /// Computes the value f(x) for this piecewise linear function.
     ///
-    /// Returns `None` if `x` is outside the domain of f.
+    /// Returns `Err(Error::OutsideDomain)` if `x` is outside the domain of f.
     pub fn y_at_x(&self, x: T) -> Result<T, Error> {
         self.segment_at_x(x).map(|line| y_at_x(&line, x))
     }
@@ -181,7 +181,7 @@ impl<T: CoordinateType> PiecewiseLinearFunction<T> {
     /// Returns a new piecewise linear function that is the restriction of this function to the
     /// specified domain.
     ///
-    /// Returns `None` if `to_domain` is not a subset of the domain of `self`.
+    /// Returns `Err(Error::OutsideDomain)` if `to_domain` is not a subset of the domain of `self`.
     pub fn shrink_domain(&self, to_domain: (T, T)) -> Result<PiecewiseLinearFunction<T>, Error> {
         let order = compare_domains(self.domain(), to_domain);
         match order {
